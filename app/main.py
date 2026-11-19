@@ -1,6 +1,10 @@
 """Flask 入口：页面 + 运行接口。
 
 环境变量：PGHOST / PGPORT / PGDATABASE / PGUSER / PGPASSWORD / PORT
+
+两个入口：
+  - /         并发写入观测台（隔离级别沙箱）
+  - /notify   LISTEN/NOTIFY 迟到观测（写端已提交、收端仍迟到）
 """
 import os
 import threading
@@ -8,6 +12,19 @@ import threading
 from flask import Flask, jsonify, render_template, request
 
 from engine import run_experiment
+from notify_engine import (
+    DEFAULT_CHANNEL,
+    DEFAULT_TIMEOUT as NOTIFY_DEFAULT_TIMEOUT,
+    MAX_PAYLOAD_BYTES,
+    MAX_REPEAT,
+    MAX_TIMEOUT as NOTIFY_MAX_TIMEOUT,
+    MIN_TIMEOUT as NOTIFY_MIN_TIMEOUT,
+    NotifyConfigError,
+    default_config,
+    normalize_config,
+    run_observation,
+)
+from notify_presets import NOTIFY_PRESETS
 from presets import PRESETS
 from script_parser import ScriptError, parse_script
 
@@ -15,6 +32,8 @@ app = Flask(__name__)
 
 # 所有请求共用一个沙箱库，同一时刻只允许跑一轮实验，避免互相重置数据
 RUN_LOCK = threading.Lock()
+# 通知观测也连同一个沙箱库：同一时刻只允许一次观测，避免与隔离级别实验互相干扰
+NOTIFY_LOCK = threading.Lock()
 
 DEFAULT_TIMEOUT = 5.0
 MAX_TIMEOUT = 60.0
@@ -69,6 +88,47 @@ def run():
     finally:
         RUN_LOCK.release()
     return jsonify({"rounds": rounds, "timeout_s": timeout_s})
+
+
+# ------------------------------------------------------------ 通知迟到观测 --
+
+@app.get("/notify")
+def notify_page():
+    return render_template(
+        "notify.html",
+        notify_presets=NOTIFY_PRESETS,
+        notify_defaults=default_config(),
+        limits={
+            "min_timeout": NOTIFY_MIN_TIMEOUT,
+            "max_timeout": NOTIFY_MAX_TIMEOUT,
+            "default_timeout": NOTIFY_DEFAULT_TIMEOUT,
+            "max_repeat": MAX_REPEAT,
+            "max_payload_bytes": MAX_PAYLOAD_BYTES,
+            "default_channel": DEFAULT_CHANNEL,
+        },
+    )
+
+
+@app.get("/api/notify/presets")
+def notify_presets():
+    return jsonify(NOTIFY_PRESETS)
+
+
+@app.post("/api/notify/run")
+def notify_run():
+    body = request.get_json(force=True, silent=True) or {}
+    try:
+        config = normalize_config(body)
+    except NotifyConfigError as exc:
+        return jsonify({"error": f"参数错误：{exc}"}), 400
+
+    if not NOTIFY_LOCK.acquire(blocking=False):
+        return jsonify({"error": "已有通知观测正在运行，请稍候"}), 409
+    try:
+        result = run_observation(conninfo(), config)
+    finally:
+        NOTIFY_LOCK.release()
+    return jsonify(result)
 
 
 if __name__ == "__main__":

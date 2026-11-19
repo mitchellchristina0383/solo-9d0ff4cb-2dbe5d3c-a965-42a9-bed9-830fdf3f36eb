@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>通知迟到观测 · LISTEN/NOTIFY 沙箱</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1f2430; --muted: #6b7280;
+    --line: #e3e6ea; --accent: #2563eb;
+    --ok: #15803d; --ok-bg: #dcfce7;
+    --warn: #b45309; --warn-bg: #fef3c7;
+    --bad: #b91c1c; --bad-bg: #fee2e2;
+    --neutral: #4b5563; --neutral-bg: #e5e7eb;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.55 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  header { padding: 18px 24px 6px; }
+  header h1 { font-size: 20px; margin: 0 0 4px; }
+  header p { margin: 0; color: var(--muted); }
+  header nav { margin-top: 6px; font-size: 13px; }
+  header nav a { color: var(--accent); text-decoration: none; }
+  main { padding: 12px 24px 40px; max-width: 1180px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+           padding: 14px 16px; margin-bottom: 16px; }
+  label.block { display: block; font-weight: 600; margin: 12px 0 4px; }
+  label.inline { font-weight: 600; }
+  textarea, input[type=text], input[type=number], select {
+    font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px;
+    background: #fbfbfc; }
+  textarea { width: 100%; resize: vertical; }
+  input[type=number] { width: 80px; }
+  input[type=text] { width: 220px; }
+  .payloads { min-height: 62px; }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 6px;
+           padding: 7px 16px; font-size: 14px; cursor: pointer; }
+  button:disabled { opacity: .55; cursor: wait; }
+  button.secondary { background: #fff; color: var(--accent); border: 1px solid var(--accent); }
+  .hint { color: var(--muted); font-size: 12.5px; }
+  .hint code, code.inline { background: #eef1f5; border-radius: 4px; padding: 1px 5px;
+             font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+  .txn-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+  @media (max-width: 820px) { .txn-grid { grid-template-columns: 1fr; } }
+  fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px 12px; margin: 0; }
+  legend { font-weight: 700; padding: 0 6px; }
+  .stage { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+           padding: 12px 14px; margin-bottom: 12px; }
+  .stage h3 { font-size: 15px; margin: 0 0 4px; display: flex; align-items: center;
+              gap: 8px; flex-wrap: wrap; }
+  .stage .detail { color: var(--muted); font-size: 12.5px; margin: 0 0 8px; }
+  .badge { display: inline-block; border-radius: 999px; padding: 1px 10px; font-size: 12px;
+           font-weight: 600; white-space: nowrap; }
+  .badge.ok { color: var(--ok); background: var(--ok-bg); }
+  .badge.warn { color: var(--warn); background: var(--warn-bg); }
+  .badge.bad { color: var(--bad); background: var(--bad-bg); }
+  .badge.neutral { color: var(--neutral); background: var(--neutral-bg); }
+  .cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  @media (max-width: 820px) { .cols { grid-template-columns: 1fr; } }
+  .col { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .col h4 { margin: 0 0 6px; font-size: 13px; display: flex; gap: 8px; align-items: center; }
+  .role.idle { color: #7c3aed; } .role.held { color: #0d9488; }
+  .role.writer { color: #b45309; } .role.SYS { color: var(--muted); }
+  .note-list { margin: 0; padding-left: 18px; font-size: 12.5px; }
+  .note-list li { margin: 1px 0; }
+  .empty { color: var(--muted); font-size: 12.5px; font-style: italic; }
+  .note { margin: 8px 0 0; font-size: 12.5px; }
+  .note.warn { color: var(--warn); }
+  .note.bad { color: var(--bad); }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border: 1px solid var(--line); padding: 4px 8px; text-align: left;
+           vertical-align: top; font-size: 12.5px; }
+  th { background: #f1f3f6; font-weight: 600; }
+  .mini th, .mini td { padding: 2px 6px; font-size: 12px; }
+  h2.sub { font-size: 16px; margin: 20px 0 8px; }
+  #status { color: var(--muted); }
+  .error-banner { background: var(--bad-bg); color: var(--bad); border: 1px solid var(--bad);
+                  border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; }
+  .summary { display: flex; gap: 20px; flex-wrap: wrap; align-items: center;
+             margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>通知迟到观测</h1>
+  <p>两条连接监听同一频道：一条空闲，一条保持事务开启。写端分两笔事务发送通知，
+     每笔可重复发送并选择提交或回滚；空闲端实收单独提交的收尾通知后，才结束另一端的事务。
+     分阶段对照两端实收与预期——看“写端已提交，收端仍迟到”。</p>
+  <nav><a href="/">← 并发写入观测台（隔离级别沙箱）</a></nav>
+</header>
+<main>
+  <section class="panel">
+    <div class="row" style="margin-top:0">
+      <label for="preset"><b>样例：</b></label>
+      <select id="preset"></select>
+      <button type="button" class="secondary" id="loadPreset">载入</button>
+      <span class="hint" id="presetDesc"></span>
+    </div>
+
+    <div class="row">
+      <label class="inline" for="channel">频道名：</label>
+      <input id="channel" type="text" spellcheck="false">
+      <label class="inline" for="timeout">整体超时（秒）：</label>
+      <input id="timeout" type="number" min="1" max="60" step="1" value="8">
+      <label class="inline" for="endWith">结束持事务端：</label>
+      <select id="endWith"></select>
+      <span class="hint">超时后保留已收到内容，标明未确认阶段并释放连接。</span>
+    </div>
+
+    <div class="txn-grid">
+      <fieldset>
+        <legend>第一笔写端事务</legend>
+        <label class="block" for="txn1Payloads">通知内容（每行一个）</label>
+        <textarea id="txn1Payloads" class="payloads" spellcheck="false"></textarea>
+        <div class="row">
+          <label class="inline" for="txn1Repeat">每行重复发送</label>
+          <input id="txn1Repeat" type="number" min="1" max="50" step="1" value="3">
+          <span class="hint">次</span>
+        </div>
+        <div class="row">
+          <label class="inline" for="txn1Outcome">结束方式</label>
+          <select id="txn1Outcome"></select>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>第二笔写端事务</legend>
+        <label class="block" for="txn2Payloads">通知内容（每行一个）</label>
+        <textarea id="txn2Payloads" class="payloads" spellcheck="false"></textarea>
+        <div class="row">
+          <label class="inline" for="txn2Repeat">每行重复发送</label>
+          <input id="txn2Repeat" type="number" min="1" max="50" step="1" value="3">
+          <span class="hint">次</span>
+        </div>
+        <div class="row">
+          <label class="inline" for="txn2Outcome">结束方式</label>
+          <select id="txn2Outcome"></select>
+        </div>
+      </fieldset>
+    </div>
+
+    <fieldset style="margin-top:14px">
+      <legend>收尾通知（单独一笔事务）</legend>
+      <div class="row" style="margin-top:2px">
+        <label class="inline" for="closingSend">发送收尾通知</label>
+        <input id="closingSend" type="checkbox" checked>
+        <span class="hint">空闲端实收这条收尾通知后，才结束持事务端的事务。</span>
+      </div>
+      <label class="block" for="closingPayload">内容（单独一笔事务发送并提交）</label>
+      <input id="closingPayload" type="text" spellcheck="false">
+    </fieldset>
+
+    <div class="row" style="margin-top:14px">
+      <button type="button" id="run">开始观测</button>
+      <span id="status"></span>
+    </div>
+  </section>
+
+  <section id="results"></section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const DEFAULTS = {{ notify_defaults | tojson }};
+const PRESETS = {{ notify_presets | tojson }};
+const LIMITS = {{ limits | tojson }};
+let busy = false;
+
+const OUTCOME_OPTIONS = [
+  ["commit", "COMMIT（提交）"],
+  ["rollback", "ROLLBACK（回滚）"],
+];
+const ROLE_LABELS = {
+  idle: "空闲端（不在事务里）",
+  held: "持事务端（事务保持开启）",
+  writer: "写端",
+  SYS: "系统",
+};
+const STATUS_BADGES = {
+  ok: ["符合预期", "ok"],
+  mismatch: ["与预期不符", "bad"],
+  unconfirmed: ["未确认（超时）", "warn"],
+  skipped: ["未执行", "neutral"],
+  error: ["出错", "bad"],
+  pending: ["未开始", "neutral"],
+};
+const EVENT_LABELS = {
+  listen: "LISTEN",
+  begin: "BEGIN",
+  ready: "两端就绪",
+  connect: "写端连接",
+  stage_start: "阶段开始",
+  stage_done: "阶段结束",
+  sent: "发送通知",
+  commit: "COMMIT",
+  rollback: "ROLLBACK",
+  received: "收到通知",
+  end: "结束事务",
+  late_received: "释放后补收",
+  timeout: "超时",
+  closed: "连接释放",
+  error: "出错",
+  cleanup_error: "收尾出错",
+};
+const PENDING_LIMIT = 3;
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined && text !== null) node.textContent = text;
+  return node;
+}
+
+function fmtList(payloads) {
+  return payloads.join("、");
+}
+
+function payloadBadges(payloads) {
+  const wrap = el("div");
+  if (!payloads.length) {
+    wrap.appendChild(el("span", "empty", "（无）"));
+    return wrap;
+  }
+  const ul = el("ul", "note-list");
+  payloads.forEach((p) => ul.appendChild(el("li", null, "“" + p + "”")));
+  wrap.appendChild(ul);
+  return wrap;
+}
+
+function fillOptions(select, options) {
+  select.textContent = "";
+  options.forEach(([value, label]) => {
+    const opt = el("option", null, label);
+    opt.value = value;
+    select.appendChild(opt);
+  });
+}
+
+function applyConfig(cfg) {
+  $("channel").value = cfg.channel || LIMITS.default_channel;
+  $("timeout").value = cfg.timeout_s || LIMITS.default_timeout;
+  ["txn1", "txn2"].forEach((key) => {
+    const t = cfg[key] || {};
+    $(key + "Payloads").value = Array.isArray(t.payloads)
+      ? t.payloads.join("\n") : (t.payloads || "");
+    $(key + "Repeat").value = t.repeat || 1;
+    $(key + "Outcome").value = t.outcome || "commit";
+  });
+  const closing = cfg.closing || {};
+  $("closingSend").checked = closing.send !== false;
+  $("closingPayload").value = closing.payload || "closing";
+  $("endWith").value = cfg.end_with || "commit";
+}
+
+function collectConfig() {
+  const seconds = (s) => parseFloat(s) || LIMITS.default_timeout;
+  return {
+    channel: $("channel").value.trim(),
+    txn1: {
+      payloads: $("txn1Payloads").value,
+      repeat: parseInt($("txn1Repeat").value, 10) || 1,
+      outcome: $("txn1Outcome").value,
+    },
+    txn2: {
+      payloads: $("txn2Payloads").value,
+      repeat: parseInt($("txn2Repeat").value, 10) || 1,
+      outcome: $("txn2Outcome").value,
+    },
+    closing: {
+      send: $("closingSend").checked,
+      payload: $("closingPayload").value.trim(),
+    },
+    end_with: $("endWith").value,
+    timeout_s: seconds($("timeout").value),
+  };
+}
+
+function renderStage(stage, result) {
+  const box = el("div", "stage");
+  const h = el("h3");
+  h.appendChild(el("span", "muted", "阶段 " + stage.index));
+  h.appendChild(el("span", null, stage.name));
+  const [badgeText, badgeCls] = STATUS_BADGES[stage.status] || STATUS_BADGES.pending;
+  h.appendChild(el("span", "badge " + badgeCls, badgeText));
+  box.appendChild(h);
+  if (stage.detail) box.appendChild(el("p", "detail", stage.detail));
+
+  const writerInfo = stage.writer;
+  if (writerInfo) {
+    const parts = ["写端发送 " + writerInfo.sent_count + " 次（" +
+      writerInfo.distinct + " 个不同内容 × " + writerInfo.repeat + " 次）"];
+    parts.push(writerInfo.outcome === "commit" ? "已提交" : "已回滚");
+    if (writerInfo.tag) parts.push("服务器返回 " + writerInfo.tag);
+    box.appendChild(el("div", "hint", parts.join("；")));
+  }
+  if (stage.wait === "held" && result.end) {
+    box.appendChild(el("div", "hint",
+      "持事务端以 " + (result.end.mode === "commit" ? "COMMIT" : "ROLLBACK") +
+      " 结束事务（服务器返回 " + result.end.tag + "）。"));
+  }
+
+  const cols = el("div", "cols");
+  ["idle", "held"].forEach((role) => {
+    const col = el("div", "col");
+    const h4 = el("h4");
+    h4.appendChild(el("span", "role " + role, ROLE_LABELS[role]));
+    const exp = stage.expected[role] || [];
+    const act = stage.actual[role] || [];
+    const same = exp.length === act.length &&
+      exp.slice().sort().join("\u0000") === act.slice().sort().join("\u0000");
+    h4.appendChild(el("span", "badge " + (same ? "ok" : "bad"),
+      same ? "符合预期" : "与预期不符"));
+    col.appendChild(h4);
+
+    const expWrap = el("div");
+    expWrap.appendChild(el("span", "hint", "预期 " + exp.length + " 条："));
+    if (exp.length) expWrap.appendChild(payloadBadges(exp));
+    else expWrap.appendChild(el("span", "empty", "（无）"));
+    col.appendChild(expWrap);
+
+    const actWrap = el("div");
+    actWrap.appendChild(el("span", "hint", "实收 " + act.length + " 条："));
+    if (act.length) actWrap.appendChild(payloadBadges(act));
+    else actWrap.appendChild(el("span", "empty", "（无）"));
+    col.appendChild(actWrap);
+
+    const arrivals = stage.arrivals[role] || [];
+    if (arrivals.length) {
+      const times = el("ul", "note-list");
+      arrivals.slice(0, PENDING_LIMIT).forEach((a) =>
+        times.appendChild(el("li", null, "“" + a.payload + "” 于 " + a.t.toFixed(3) + "s")));
+      if (arrivals.length > PENDING_LIMIT) {
+        times.appendChild(el("li", "muted",
+          "……共 " + arrivals.length + " 条，仅列前 " + PENDING_LIMIT + " 条"));
+      }
+      col.appendChild(times);
+    }
+    cols.appendChild(col);
+  });
+  box.appendChild(cols);
+
+  if (stage.note) {
+    const cls = stage.status === "unconfirmed" ? "note warn"
+      : (stage.status === "mismatch" || stage.status === "error") ? "note bad" : "note";
+    box.appendChild(el("p", cls, stage.note));
+  }
+  return box;
+}
+
+function totalsLine(totals) {
+  const render = (role) => {
+    const t = totals[role] || { count: 0, by_payload: {} };
+    const parts = Object.keys(t.by_payload).map(
+      (k) => "“" + k + "” × " + t.by_payload[k]);
+    return ROLE_LABELS[role] + " " + t.count + " 条" +
+      (parts.length ? "（" + parts.join("，") + "）" : "");
+  };
+  return el("div", "hint", "全程合计：" + render("idle") + "；" + render("held") + "。");
+}
+
+function renderResult(result) {
+  const box = el("section");
+  const summary = el("div", "summary");
+  const title = el("h2", "sub", "观测结果");
+  title.style.margin = "0";
+  summary.appendChild(title);
+
+  if (result.error) {
+    summary.appendChild(el("span", "badge bad", "本次观测出错"));
+  } else if (result.timed_out) {
+    summary.appendChild(el("span", "badge warn", "存在未确认阶段（超时）"));
+  } else {
+    const mismatched = result.stages.some((s) => s.status === "mismatch");
+    summary.appendChild(el("span", "badge " + (mismatched ? "bad" : "ok"),
+      mismatched ? "实收与预期不一致" : "全部阶段符合预期"));
+  }
+  summary.appendChild(el("span", "muted", "耗时 " + result.duration + "s"));
+  summary.appendChild(el("span", "muted", "频道 “" + result.channel + "”"));
+  box.appendChild(summary);
+
+  if (result.error) box.appendChild(el("div", "error-banner", result.error));
+
+  if (result.timed_out) {
+    const unconfirmed = result.stages.filter((s) => s.status === "unconfirmed");
+    const note = el("div", "error-banner");
+    note.style.background = "var(--warn-bg)";
+    note.style.borderColor = "var(--warn)";
+    note.style.color = "var(--warn)";
+    note.textContent = "超时结束：" + unconfirmed.length + " 个阶段未确认（已保留此前及本阶段" +
+      "已收到的内容，跳过后续阶段），连接已释放。" +
+      (result.unconfirmed_stages.length
+        ? " 未确认阶段：" + result.unconfirmed_stages.map((i) => "阶段 " + i).join("、") : "");
+    box.appendChild(note);
+  }
+
+  if (result.end) {
+    box.appendChild(el("div", "hint", "持事务端收尾：" + result.end.note +
+      "（" + result.end.tag + "，pid " + result.end.pid + "）"));
+  }
+
+  result.stages.forEach((s) => box.appendChild(renderStage(s, result)));
+  box.appendChild(totalsLine(result.totals));
+
+  const late = result.late;
+  if (late && (late.idle.length || late.held.length)) {
+    const lateBox = el("div", "stage");
+    lateBox.appendChild(el("h3", null, "释放连接后的迟到补收"));
+    lateBox.appendChild(el("p", "detail", late.note));
+    ["idle", "held"].forEach((role) => {
+      const items = late[role];
+      lateBox.appendChild(el("div", "hint",
+        ROLE_LABELS[role] + " 补收 " + items.length + " 条" +
+        (items.length ? "：" + fmtList(items.map((i) => i.payload)) : "")));
+    });
+    box.appendChild(lateBox);
+  }
+
+  const eventsBox = el("details");
+  eventsBox.appendChild(el("summary", null, "观测时间线（点击展开）"));
+  const table = el("table", "mini");
+  const head = el("tr");
+  ["时间", "角色", "事件", "详情"].forEach((t) => head.appendChild(el("th", null, t)));
+  table.appendChild(head);
+  result.events.forEach((ev) => {
+    const tr = el("tr");
+    tr.appendChild(el("td", null, ev.t.toFixed(3) + "s"));
+    tr.appendChild(el("td", "role " + ev.role, ROLE_LABELS[ev.role] || ev.role));
+    tr.appendChild(el("td", null, EVENT_LABELS[ev.kind] || ev.kind));
+    const td = el("td");
+    if (ev.stage !== undefined) td.appendChild(el("span", "muted", "阶段 " + ev.stage + " "));
+    if (ev.payload) td.appendChild(el("code", "inline", ev.payload));
+    if (ev.detail) td.appendChild(el("div", "muted", ev.detail));
+    if (ev.note) td.appendChild(el("div", "muted", ev.note));
+    tr.appendChild(td);
+    table.appendChild(tr);
+  });
+  eventsBox.appendChild(table);
+  box.appendChild(eventsBox);
+  return box;
+}
+
+async function run() {
+  if (busy) return;
+  busy = true;
+  $("run").disabled = true;
+  $("status").textContent = "观测中……（结束后才释放连接）";
+  $("results").textContent = "";
+  try {
+    const resp = await fetch("/api/notify/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(collectConfig()),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      $("results").appendChild(el("div", "error-banner",
+        data.error || ("HTTP " + resp.status)));
+      return;
+    }
+    $("results").appendChild(renderResult(data));
+  } catch (e) {
+    $("results").appendChild(el("div", "error-banner", String(e)));
+  } finally {
+    busy = false;
+    $("run").disabled = false;
+    $("status").textContent = "";
+  }
+}
+
+function init() {
+  fillOptions($("txn1Outcome"), OUTCOME_OPTIONS);
+  fillOptions($("txn2Outcome"), OUTCOME_OPTIONS);
+  fillOptions($("endWith"), OUTCOME_OPTIONS);
+  PRESETS.forEach((p, i) => {
+    const opt = el("option", null, p.name);
+    opt.value = i;
+    $("preset").appendChild(opt);
+  });
+  const sel = $("preset");
+  sel.onchange = () => loadPreset(Number(sel.value));
+  if (PRESETS.length) loadPreset(0); else applyConfig(DEFAULTS);
+  $("loadPreset").addEventListener("click", () => loadPreset(Number(sel.value)));
+  $("run").addEventListener("click", run);
+}
+
+function loadPreset(i) {
+  const p = PRESETS[i];
+  if (!p) { applyConfig(DEFAULTS); return; }
+  applyConfig(p.config);
+  $("presetDesc").textContent = p.description;
+}
+
+init();
+</script>
+</body>
+</html>
